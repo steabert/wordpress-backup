@@ -1,0 +1,156 @@
+#!/bin/bash
+#
+# backup-wordpress-site
+#
+# simple script to write backups using rsync, skipping non-changed files by
+# hardlinking them. To backup the wordpress site, both the wordpress directory
+# need to be backed up as well as the mysql database.
+#
+# Steven Vancoillie
+
+# initial parameters
+DRY_RUN=0
+VEBROSE=0
+RSYNC_ARGS=""
+
+ME=${0##*/}
+
+# user settings: change these to reflect your installation
+
+# settings of the remote web server
+SSH_USER=""   # user with SSH access to web server
+SSH_HOST=""   # hostname of the web server
+SSH_KEY=""    # optional SSH key location
+SRC_DIR=""    # WordPress directory
+WP_USER=""    # database user
+WP_PASS=""    # database password
+WP_DB=""      # database name
+BINLOG_DIR="" # location of mysql binary logs
+
+# settings for the local backup
+BAK_DIR="" # existing directory where backups will be located
+
+# function which prints usage information
+usage () {
+        echo "Usage: ${ME} [-h] [options]"
+        echo
+        echo "Options:"
+        echo "  -z           compress files during transfer"
+        echo "  -v           verbose output"
+        echo "  -n           perform a dry-run, no backup is made"
+        echo "  -l level     level of the backup, 0 = full backup"
+        echo "               level of the backup, 0 = full backup"
+        echo
+}
+
+message () {
+        echo "${ME}: $*"
+}
+
+# function that executes a command remotely
+remote () {
+        ssh -l "${SSH_USER}" -i "${SSH_KEY}" "${SSH_HOST}" $*
+}
+
+# parse options
+while getopts "hzvnl:" opt
+do
+        case ${opt} in
+                h) usage
+                        exit 0 ;;
+                z) RSYNC_ARGS+=" -z" ;;
+                v) VERBOSE=1
+                        RSYNC_ARGS+=" -v" ;;
+                n) DRY_RUN=1
+                        RSYNC_ARGS+=" -n" ;;
+                l) LEVEL="${OPTARG}" ;;
+                *) usage
+                        exit 1;;
+        esac
+done
+
+if [[ -z "${LEVEL}" ]]
+then
+        LEVEL=0
+fi
+
+# paranoia sanity check, shouldn't happen
+if [[ ! -d "${BAK_DIR}" ]]; then
+        echo "ERROR: non-existing backup directory"
+        exit 1
+fi
+
+# create the backup ID
+ID="$(date +%F_%T).level${LEVEL}"
+if [[ -z "${ID}" ]]
+then
+        echo "ERROR: empty backup ID"
+        exit 1
+fi
+
+if ((DRY_RUN))
+then
+        message "dry-run, no actual backup is made!"
+else
+        message "making backup of ${SRC_DIR} on ${SSH_HOST} to ${BAK_DIR}/${ID}"
+        mkdir -p "${BAK_DIR}/${ID}" || exit 1
+fi
+
+# rsync the contents of the source to the destination directory:
+# -> creates hardlinks of unaltered files against the most recent backup that was made
+# -> uses relative paths to preserve full path on the backup, so that
+#    a backup of /home/user/foo on /backup becomes /backup/id/home/user/foo
+
+if [[ "${LEVEL}" != "0" ]]
+then
+        LAST=$(find "${BAK_DIR}/" -type d -name "*level$((LEVEL-1))" -print | sort -n | tail -n 1)
+        if [[ ! -d "${LAST}" ]]
+        then
+                echo "cannot perform level ${LEVEL} backup, no lower level found"
+                exit 1
+        else
+                LAST_BASE=$(basename "${LAST}")
+                touch "${BAK_DIR}/${ID}/${LAST_BASE}"
+        fi
+        message "performing level ${LEVEL} backup agains ${LAST}"
+        rsync -a ${RSYNC_ARGS} \
+                --link-dest="${LAST}/wordpress-site" \
+                -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
+                "${SSH_HOST}:${SRC_DIR}/" \
+                "${BAK_DIR}/${ID}/wordpress-site/"
+        rsync -a ${RSYNC_ARGS} \
+                --link-dest="${LAST}/mysql-binlog" \
+                -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
+                "${SSH_HOST}:${BINLOG_DIR}/" \
+                "${BAK_DIR}/${ID}/mysql-binlog/"
+else
+        message "performing a level 0 full backup"
+        rsync -a ${RSYNC_ARGS} \
+                -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
+                "${SSH_HOST}:${SRC_DIR}/" \
+                "${BAK_DIR}/${ID}/wordpress-site/"
+        rsync -a ${RSYNC_ARGS} \
+                -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
+                "${SSH_HOST}:${BINLOG_DIR}/" \
+                "${BAK_DIR}/${ID}/mysql-binlog/"
+fi
+
+rc=$?
+if ((${rc})); then
+        echo "ERROR: rsync exited with value ${rc}"
+        exit 1
+fi
+
+# create a backup of the mysql database
+remote mysqldump -u "${WP_USER}" -p"${WP_PASS}" --flush-logs --single-transaction "${WP_DB}" > "${BAK_DIR}/${ID}/${WP_DB}.sql"
+
+# update link pointing to most recent backup
+if ((!DRY_RUN))
+then
+        ln -sfT "${BAK_DIR}/${ID}" "${BAK_DIR}/recent" || exit 1
+fi
+
+# finally, indicate succesful backup
+touch "${BAK_DIR}/${ID}/success"
+
+exit 0
