@@ -8,15 +8,8 @@
 #
 # Steven Vancoillie
 
-# initial parameters
-DRY_RUN=0
-VEBROSE=0
-RSYNC_ARGS=""
-
-ME=${0##*/}
-
 # user settings: change these to reflect your installation
-
+############################################################
 # settings of the remote web server
 SSH_USER=""   # user with SSH access to web server
 SSH_HOST=""   # hostname of the web server
@@ -26,25 +19,29 @@ WP_USER=""    # database user
 WP_PASS=""    # database password
 WP_DB=""      # database name
 BINLOG_DIR="" # location of mysql binary logs
-
 # settings for the local backup
-BAK_DIR="" # existing directory where backups will be located
+BACKUP_DIR="" # existing directory where backups will be located
+############################################################
+
+# initial parameters
+DRY_RUN=0
+VEBROSE=0
+RSYNC_ARGS="-z"
+
+ME=${0##*/}
 
 # function which prints usage information
 usage () {
         echo "Usage: ${ME} [-h] [options]"
         echo
         echo "Options:"
-        echo "  -z           compress files during transfer"
         echo "  -v           verbose output"
         echo "  -n           perform a dry-run, no backup is made"
-        echo "  -l level     level of the backup, 0 = full backup"
-        echo "               level of the backup, 0 = full backup"
+        echo "  -l level     level of the backup: 0 = full backup,"
+        echo "               higher levels hardlink unchanged files"
+        echo "               agains the most recent level that was"
+        echo "               1 lower (default = 0)"
         echo
-}
-
-message () {
-        echo "${ME}: $*"
 }
 
 # function that executes a command remotely
@@ -52,13 +49,38 @@ remote () {
         ssh -l "${SSH_USER}" -i "${SSH_KEY}" "${SSH_HOST}" $*
 }
 
+# helper functions
+message () {
+        echo "${ME}: $*"
+}
+
+error () {
+        echo "${ME}: ERROR: $*"
+        exit 1
+}
+
+success () {
+        echo "backup successful!"
+        touch "${BACKUP_DIR}/${BACKUP_ID}/SUCCESS"
+}
+
+failure () {
+        echo "####################################"
+        echo "## backup FAILED, please check!!! ##"
+        echo "####################################"
+        touch "${BACKUP_DIR}/${BACKUP_ID}/FAILURE"
+        exit 1;
+}
+
+# stop on commands that do not complete properly
+trap "failure" ERR
+
 # parse options
 while getopts "hzvnl:" opt
 do
         case ${opt} in
                 h) usage
                         exit 0 ;;
-                z) RSYNC_ARGS+=" -z" ;;
                 v) VERBOSE=1
                         RSYNC_ARGS+=" -v" ;;
                 n) DRY_RUN=1
@@ -75,25 +97,24 @@ then
 fi
 
 # paranoia sanity check, shouldn't happen
-if [[ ! -d "${BAK_DIR}" ]]; then
+if [[ ! -d "${BACKUP_DIR}" ]]; then
         echo "ERROR: non-existing backup directory"
         exit 1
 fi
 
-# create the backup ID
-ID="$(date +%F_%T).level${LEVEL}"
-if [[ -z "${ID}" ]]
+# create the backup BACKUP_ID
+BACKUP_ID="$(date +%F_%T).level${LEVEL}"
+if [[ -z "${BACKUP_ID}" ]]
 then
-        echo "ERROR: empty backup ID"
-        exit 1
+        error "empty backup BACKUP_ID"
 fi
 
 if ((DRY_RUN))
 then
         message "dry-run, no actual backup is made!"
 else
-        message "making backup of ${SRC_DIR} on ${SSH_HOST} to ${BAK_DIR}/${ID}"
-        mkdir -p "${BAK_DIR}/${ID}" || exit 1
+        message "making backup of ${SRC_DIR} on ${SSH_HOST} to ${BACKUP_DIR}/${BACKUP_ID}"
+        mkdir -p "${BACKUP_DIR}/${BACKUP_ID}"
 fi
 
 # rsync the contents of the source to the destination directory:
@@ -103,54 +124,46 @@ fi
 
 if [[ "${LEVEL}" != "0" ]]
 then
-        LAST=$(find "${BAK_DIR}/" -type d -name "*level$((LEVEL-1))" -print | sort -n | tail -n 1)
-        if [[ ! -d "${LAST}" ]]
+        PREVIOUS_LEVEL=$(realpath "${BACKUP_DIR}/recent.level$((LEVEL-1))")
+        if [[ ! -d "${PREVIOUS_LEVEL}" ]]
         then
-                echo "cannot perform level ${LEVEL} backup, no lower level found"
-                exit 1
+                error "cannot perform level ${LEVEL} backup, no lower level found"
         else
-                LAST_BASE=$(basename "${LAST}")
-                touch "${BAK_DIR}/${ID}/${LAST_BASE}"
+                ln -s "${PREVIOUS_LEVEL}" "${BACKUP_DIR}/${BACKUP_ID}/"
         fi
-        message "performing level ${LEVEL} backup agains ${LAST}"
+        message "performing level ${LEVEL} backup against ${PREVIOUS_LEVEL}"
         rsync -a ${RSYNC_ARGS} \
-                --link-dest="${LAST}/wordpress-site" \
+                --link-dest="${PREVIOUS_LEVEL}/wordpress-site" \
                 -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
                 "${SSH_HOST}:${SRC_DIR}/" \
-                "${BAK_DIR}/${ID}/wordpress-site/"
-        rsync -a ${RSYNC_ARGS} \
-                --link-dest="${LAST}/mysql-binlog" \
-                -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
-                "${SSH_HOST}:${BINLOG_DIR}/" \
-                "${BAK_DIR}/${ID}/mysql-binlog/"
+                "${BACKUP_DIR}/${BACKUP_ID}/wordpress-site/"
 else
-        message "performing a level 0 full backup"
         rsync -a ${RSYNC_ARGS} \
                 -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
                 "${SSH_HOST}:${SRC_DIR}/" \
-                "${BAK_DIR}/${ID}/wordpress-site/"
-        rsync -a ${RSYNC_ARGS} \
-                -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
-                "${SSH_HOST}:${BINLOG_DIR}/" \
-                "${BAK_DIR}/${ID}/mysql-binlog/"
-fi
-
-rc=$?
-if ((${rc})); then
-        echo "ERROR: rsync exited with value ${rc}"
-        exit 1
+                "${BACKUP_DIR}/${BACKUP_ID}/wordpress-site/"
 fi
 
 # create a backup of the mysql database
-remote mysqldump -u "${WP_USER}" -p"${WP_PASS}" --flush-logs --single-transaction "${WP_DB}" > "${BAK_DIR}/${ID}/${WP_DB}.sql"
+if ((!DRY_RUN))
+then
+        remote mysqldump -u "${WP_USER}" -p"${WP_PASS}" \
+                --flush-logs --single-transaction "${WP_DB}" \
+                > "${BACKUP_DIR}/${BACKUP_ID}/${WP_DB}.sql"
+        remote tar -O -z -C "${BINLOG_DIR}" -c . \
+                > "${BACKUP_DIR}/${BACKUP_ID}/mysql-binlog.tgz"
+fi
 
 # update link pointing to most recent backup
 if ((!DRY_RUN))
 then
-        ln -sfT "${BAK_DIR}/${ID}" "${BAK_DIR}/recent" || exit 1
+        ln -sfT "${BACKUP_DIR}/${BACKUP_ID}" "${BACKUP_DIR}/recent.level${LEVEL}"
 fi
 
 # finally, indicate succesful backup
-touch "${BAK_DIR}/${ID}/success"
+if ((!DRY_RUN))
+then
+        touch "${BACKUP_DIR}/${BACKUP_ID}/success"
+fi
 
 exit 0
