@@ -106,7 +106,10 @@ fi
 BACKUP_ID="$(date +%F_%T).level${LEVEL}"
 if [[ -z "${BACKUP_ID}" ]]
 then
-        error "empty backup BACKUP_ID"
+        error "empty BACKUP_ID"
+elif [[ -d "${BACKUP_DIR}/${BACKUP_ID}/" ]]
+then
+        error "existing BACKUP_ID"
 fi
 # set the local directory
 DST_DIR=$(basename ${SRC_DIR})
