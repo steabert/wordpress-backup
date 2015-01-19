@@ -108,6 +108,12 @@ if [[ -z "${BACKUP_ID}" ]]
 then
         error "empty backup BACKUP_ID"
 fi
+# set the local directory
+DST_DIR=$(basename ${SRC_DIR})
+if [[ -z "${DST_DIR}" ]]
+then
+        DST_DIR="wp-site"
+fi
 
 if ((DRY_RUN))
 then
@@ -133,15 +139,15 @@ then
         fi
         message "performing level ${LEVEL} backup against ${PREVIOUS_LEVEL}"
         rsync -a ${RSYNC_ARGS} \
-                --link-dest="${PREVIOUS_LEVEL}/wordpress-site" \
+                --link-dest="${PREVIOUS_LEVEL}/${DST_DIR}" \
                 -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
                 "${SSH_HOST}:${SRC_DIR}/" \
-                "${BACKUP_DIR}/${BACKUP_ID}/wordpress-site/"
+                "${BACKUP_DIR}/${BACKUP_ID}/${DST_DIR}/"
 else
         rsync -a ${RSYNC_ARGS} \
                 -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
                 "${SSH_HOST}:${SRC_DIR}/" \
-                "${BACKUP_DIR}/${BACKUP_ID}/wordpress-site/"
+                "${BACKUP_DIR}/${BACKUP_ID}/${DST_DIR}/"
 fi
 
 # create a backup of the mysql database
