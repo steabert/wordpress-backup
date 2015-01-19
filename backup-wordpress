@@ -55,20 +55,20 @@ message () {
 }
 
 error () {
-        echo "${ME}: ERROR: $*"
+        message "ERROR: $*"
         exit 1
 }
 
 success () {
-        echo "backup successful!"
         touch "${BACKUP_DIR}/${BACKUP_ID}/SUCCESS"
+        message "--> backup successful!"
 }
 
 failure () {
-        echo "####################################"
-        echo "## backup FAILED, please check!!! ##"
-        echo "####################################"
         touch "${BACKUP_DIR}/${BACKUP_ID}/FAILURE"
+        message "####################################"
+        message "## backup FAILED, please check!!! ##"
+        message "####################################"
         exit 1;
 }
 
@@ -98,8 +98,7 @@ fi
 
 # paranoia sanity check, shouldn't happen
 if [[ ! -d "${BACKUP_DIR}" ]]; then
-        echo "ERROR: non-existing backup directory"
-        exit 1
+        error "non-existing backup directory"
 fi
 
 # create the backup BACKUP_ID
@@ -122,7 +121,10 @@ if ((DRY_RUN))
 then
         message "dry-run, no actual backup is made!"
 else
-        message "making backup of ${SRC_DIR} on ${SSH_HOST} to ${BACKUP_DIR}/${BACKUP_ID}"
+        message "making backup of"
+        message "    ${SRC_DIR}"
+        message " ON ${SSH_HOST}"
+        message " TO ${BACKUP_DIR}/${BACKUP_ID}"
         mkdir -p "${BACKUP_DIR}/${BACKUP_ID}"
 fi
 
@@ -140,7 +142,8 @@ then
         else
                 ln -s "${PREVIOUS_LEVEL}" "${BACKUP_DIR}/${BACKUP_ID}/"
         fi
-        message "performing level ${LEVEL} backup against ${PREVIOUS_LEVEL}"
+        message "performing level ${LEVEL} backup against"
+        message "   ${PREVIOUS_LEVEL}"
         rsync -a ${RSYNC_ARGS} \
                 --link-dest="${PREVIOUS_LEVEL}/${DST_DIR}" \
                 -e "ssh -l ${SSH_USER} -i ${SSH_KEY}" \
