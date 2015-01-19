@@ -60,12 +60,19 @@ error () {
 }
 
 success () {
-        touch "${BACKUP_DIR}/${BACKUP_ID}/SUCCESS"
-        message "--> backup successful!"
+        if ((!DRY_RUN))
+        then
+                touch "${BACKUP_DIR}/${BACKUP_ID}/SUCCESS"
+                message "--> backup successful!"
+        fi
+        exit 0
 }
 
 failure () {
-        touch "${BACKUP_DIR}/${BACKUP_ID}/FAILURE"
+        if ((!DRY_RUN))
+        then
+                touch "${BACKUP_DIR}/${BACKUP_ID}/FAILURE"
+        fi
         message "####################################"
         message "## backup FAILED, please check!!! ##"
         message "####################################"
@@ -119,12 +126,16 @@ fi
 
 if ((DRY_RUN))
 then
-        message "dry-run, no actual backup is made!"
-else
-        message "making backup of"
-        message "    ${SRC_DIR}"
-        message " ON ${SSH_HOST}"
-        message " TO ${BACKUP_DIR}/${BACKUP_ID}"
+        message "#######################################"
+        message "## DRY-RUN, NO ACTUAL BACKUP IS MADE!##"
+        message "#######################################"
+fi
+message "making backup of"
+message "    ${SRC_DIR}"
+message " ON ${SSH_HOST}"
+message " TO ${BACKUP_DIR}/${BACKUP_ID}"
+if ((!DRY_RUN))
+then
         mkdir -p "${BACKUP_DIR}/${BACKUP_ID}"
 fi
 
@@ -139,7 +150,9 @@ then
         if [[ ! -d "${PREVIOUS_LEVEL}" ]]
         then
                 error "cannot perform level ${LEVEL} backup, no lower level found"
-        else
+        fi
+        if ((!DRY_RUN))
+        then
                 ln -s "${PREVIOUS_LEVEL}" "${BACKUP_DIR}/${BACKUP_ID}/"
         fi
         message "performing level ${LEVEL} backup against"
@@ -159,11 +172,21 @@ fi
 # create a backup of the mysql database
 if ((!DRY_RUN))
 then
-        remote mysqldump -u "${WP_USER}" -p"${WP_PASS}" \
+        ssh -l "${SSH_USER}" -i "${SSH_KEY}" "${SSH_HOST}" \
+                mysqldump -u "${WP_USER}" -p"${WP_PASS}" \
                 --flush-logs --single-transaction "${WP_DB}" \
                 > "${BACKUP_DIR}/${BACKUP_ID}/${WP_DB}.sql"
-        remote tar -O -z -C "${BINLOG_DIR}" -c . \
+        ssh -l "${SSH_USER}" -i "${SSH_KEY}" "${SSH_HOST}" \
+                tar -O -z -C "${BINLOG_DIR}" -c . \
                 > "${BACKUP_DIR}/${BACKUP_ID}/mysql-binlog.tgz"
+else
+        message "\$" ssh -l "${SSH_USER}" -i "${SSH_KEY}" "${SSH_HOST}" \
+                mysqldump -u "${WP_USER}" -p"${WP_PASS}" \
+                --flush-logs --single-transaction "${WP_DB}" \
+                ">" "${BACKUP_DIR}/${BACKUP_ID}/${WP_DB}.sql"
+        message "\$" ssh -l "${SSH_USER}" -i "${SSH_KEY}" "${SSH_HOST}" \
+                tar -O -z -C "${BINLOG_DIR}" -c . \
+                ">" "${BACKUP_DIR}/${BACKUP_ID}/mysql-binlog.tgz"
 fi
 
 # update link pointing to most recent backup
@@ -172,10 +195,4 @@ then
         ln -sfT "${BACKUP_DIR}/${BACKUP_ID}" "${BACKUP_DIR}/recent.level${LEVEL}"
 fi
 
-# finally, indicate succesful backup
-if ((!DRY_RUN))
-then
-        touch "${BACKUP_DIR}/${BACKUP_ID}/success"
-fi
-
-exit 0
+success
